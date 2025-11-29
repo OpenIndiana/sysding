@@ -24,10 +24,6 @@
 # CDDL HEADER END
 
 
-# function list
-# FIXME: to be done: setup_ns_ldap
-###
-
 runcheck() {
     # prevent that we will be called twice 
     if [ x$(svcprop -p config/finished ${SMF_FMRI}) == xtrue ]; then
@@ -62,7 +58,8 @@ log_msg() {
     printf "%s %s %s: %s\n" "${my_tstamp}" "$(uname -n)" "${my_level}" "${my_msg}" | tee -a "${my_logfile}"
 }
 
-get_user_password() {                                                                                               # get user password hash
+get_user_password() {
+   # get user password hash
    typeset def_username
    
    def_username=$1
@@ -74,6 +71,61 @@ get_user_password() {                                                           
 
    hash=$(grep "^${def_username}:" /etc/shadow | cut -d : -f 2)
    printf "%s" ${hash}
+}
+
+get_dhcpsysding() {
+    # we can read a remote sysding.conf by tftp, if we boot via DHCP
+    typeset remotefile
+    typeset bootsrv
+    typeset rt
+    typeset dhcpnic
+    typeset clientmac
+
+    # do we have a DHCP configure interface?
+    dhcpnic=$(ifconfig -a | nawk -F : '$0~/DHCP.*IPv4/ { print $1 }')
+    if [ x${dhcpnic} != x ]; then
+	# what is our client mac?
+	clientmac=$(ifconfig ${dhcpnic} | nawk '$1~/^ether/ {print $NF}')
+	
+	# request bootsrv host
+	bootsrv=$(/sbin/dhcpinfo BootSrvA)
+	
+	if [ -x /usr/bin/curl ]; then 
+	    # first get general sysding.conf
+	    curl tftp://${bootsrv}/sysding.conf
+	    
+	    # now get this nodes sysding-<mac of dhcp interface>.conf 
+	    curl tftp://${bootsrv}/sysding-${clientmac}.conf >/tmp/sysding.conf.node
+	
+	    # source both configs if they exist. source general config first
+	    # to allow overrides in a node specific sysding.conf
+	    [ -f /tmp/sysding.conf ] && . /tmp/sysding.conf
+	    [ -f /tmp/sysding.conf.node ] && . /tmp/sysding.conf.node
+	else
+	    log_msg INFO "unable to find /usr/bin/curl in boot image, ignoring remote configs"
+	fi
+    fi
+}
+
+get_remotesysding() {
+    # this function fetches a sysding.conf via curl from a remote (web)server
+    # example setup should be:
+    # you boot via pxe-boot, fetch a sysding.conf via get_dhcpsysding() and 
+    # get a special global variable set REMSYSDING, which contains an URL to
+    # the final sysding.conf
+    typeset remoteurl
+    typeset rt
+
+    if [ ! "x${REMSYSDING}" == "x" ]; then
+	remoteurl=${REMSYSDING}
+    else
+	log_msg INFO "no REMSYSDING given, ignoring"
+	return 0
+    fi
+
+    curl ${remoteurl} >/tmp/sysding.conf.remote
+    
+    [ -f /tmp/sysding.conf.remote ] && . /tmp/sysding.conf.remote
 }
 
 setup_nfs4domain() {
@@ -106,7 +158,7 @@ setup_user_account() {
 
     # the username is the primary lookup key, so we check it here.
     # we do not check for uid, because multiple usernames for one uid are fine
-    if grep "^${def_username}:" >/dev/null 2>&1; then
+    if grep "^${def_username}:" /etc/passwd >/dev/null 2>&1; then
 	log_msg ERROR "username ${def_username} already exists"
 	return 1
     fi
@@ -245,6 +297,7 @@ setup_interface() {
 
     # https://github.com/olbohlen/sysding/issues/2
     # check if def_addr is IPv6 and prepare a addrconf interface first.
+    # also if def_addr is just addrconf, just prepare a addrconf interface
     echo ${def_addr} | egrep ":" >/dev/null 2>&1
     if [ $? -eq 0 ]; then
 	# it has at least one colon, it is a IPv6 addr
@@ -252,23 +305,35 @@ setup_interface() {
 	# the "link" suffix, for link-local-address
 	ipadm create-addr -T addrconf ${def_nic}/${def_obj}link
     fi
-    
-    # is def_addr specified as dhcp, then configure it that way :)
-    if [ "x${def_addr}" == "xdhcp" ]; then
-	cmd_out=$( ipadm create-addr -T dhcp ${def_nic}/${def_obj} 2>&1 )
-	if [ $? -gt 0 ]; then 
-	    log_msg ERROR "failed to set up dhcp: ${cmd_out}"
-	    rt=1
-	fi
-	cmd_out=""
-    else
-	cmd_out=$( ipadm create-addr -T static -a local=${def_addr} ${def_nic}/${def_obj} 2>&1 )
-	if [ $? -gt 0 ]; then 
-	    log_msg ERROR "failed to set up dhcp: ${cmd_out}"
-	    rt=1
-	fi
-	cmd_out=""
-    fi
+
+    case x${def_addr} in
+	xdhcp)
+	    cmd_out=$( ipadm create-addr -T dhcp ${def_nic}/${def_obj} 2>&1 )
+	    if [ $? -gt 0 ]; then 
+		log_msg ERROR "failed to set up dhcp: ${cmd_out}"
+		rt=1
+	    fi
+	    cmd_out=""
+	    ;;
+
+	xaddrconf)
+	    cmd_out=$( ipadm create-addr -T addrconf ${def_nic}/${def_obj}link )
+	    if [ $? -gt 0 ]; then 
+		log_msg ERROR "failed to set up addrconf: ${cmd_out}"
+		rt=1
+	    fi
+	    cmd_out=""
+	    ;;
+
+	*)
+	    cmd_out=$( ipadm create-addr -T static -a local=${def_addr} ${def_nic}/${def_obj} 2>&1 )
+	    if [ $? -gt 0 ]; then 
+		log_msg ERROR "failed to set up dhcp: ${cmd_out}"
+		rt=1
+	    fi
+	    cmd_out=""
+	    ;;
+    esac
     
     return ${rt}
 }

@@ -4,7 +4,7 @@
 .\" You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE or http://www.opensolaris.org/os/licensing.  See the License for the specific language governing permissions and limitations under the License.
 .\" When distributing Covered Code, include this CDDL HEADER in each file and include the License file at usr/src/OPENSOLARIS.LICENSE.  If applicable, add the following below this CDDL HEADER, with the fields enclosed by brackets "[]" replaced with your own identifying information: Portions Copyright [yyyy] [name of copyright owner]
 
-.TH SYSDING 8 "14 Dec 2024" "" "System Administration Commands"
+.TH SYSDING 8 "23 Nov 2025" "" "System Administration Commands"
 .SH NAME
 sysding \- system configuration, replaces sysidtool
 .SH SYNOPSIS
@@ -83,7 +83,8 @@ sets users "username" password-hash to the specified one in "hash"
 .ad
 .sp .6
 .RS 4n
-configures the specified NIC "nic" for IP. "nic" may be the alias "PRIMARY" which refers to the first NIC found by dladm. If "addr" is the special value "dhcp" it will configure a dhcp-address.
+configures the specified NIC "nic" for IP. "nic" may be the alias "PRIMARY" which refers to the first NIC found by dladm. If "addr" is the special value "dhcp" it will configure a dhcp-address, if "addr" is the special value "addrconf" it will configure ONLY a link-local unicast address.
+NOTE: you don't have to configure an "addrconf" interface if you configure a static IPv6 address, this will be done automatically.
 The "addr-object suffix" is the suffix given after the nic-name in the address-object (see \fRipadm\fB(8)).
 .RE
 
