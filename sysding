@@ -59,15 +59,15 @@ log_msg() {
 }
 
 get_user_password() {
-   # get user password hash
-   typeset def_username
-   
-   def_username=$1
-   
-   if [ "x${def_username}" == "x" ]; then
-        log_msg ERROR "missing username, returning empty hash"
-        printf ""
-   fi
+    # get user password hash
+    typeset def_username
+
+    def_username=$1
+
+    if [ "x${def_username}" == "x" ]; then
+	log_msg ERROR "missing username, returning empty hash"
+	printf ""
+    fi
 
    hash=$(grep "^${def_username}:" /etc/shadow | cut -d : -f 2)
    printf "%s" ${hash}
@@ -86,17 +86,17 @@ get_dhcpsysding() {
     if [ x${dhcpnic} != x ]; then
 	# what is our client mac?
 	clientmac=$(ifconfig ${dhcpnic} | nawk '$1~/^ether/ {print $NF}')
-	
+
 	# request bootsrv host
 	bootsrv=$(/sbin/dhcpinfo BootSrvA)
-	
-	if [ -x /usr/bin/curl ]; then 
+
+	if [ -x /usr/bin/curl ]; then
 	    # first get general sysding.conf
 	    curl tftp://${bootsrv}/sysding.conf
-	    
-	    # now get this nodes sysding-<mac of dhcp interface>.conf 
+
+	    # now get this nodes sysding-<mac of dhcp interface>.conf
 	    curl tftp://${bootsrv}/sysding-${clientmac}.conf >/tmp/sysding.conf.node
-	
+
 	    # source both configs if they exist. source general config first
 	    # to allow overrides in a node specific sysding.conf
 	    [ -f /tmp/sysding.conf ] && . /tmp/sysding.conf
@@ -124,8 +124,230 @@ get_remotesysding() {
     fi
 
     curl ${remoteurl} >/tmp/sysding.conf.remote
-    
+
     [ -f /tmp/sysding.conf.remote ] && . /tmp/sysding.conf.remote
+}
+
+setup_aggregate() {
+    # set up aggregate interface (may be called as many times as you need aggregate interfaces)
+    typeset def_link
+    typeset def_lacp
+    typeset def_policy
+    typeset def_links
+    typeset links_arg
+
+    rt=0
+
+    def_link="$1"
+    def_lacp="$2"
+    def_policy="$3"
+    shift 3
+    def_links="$@"
+    links_arg=""
+
+
+    # check for valid LACP mode
+    if [ x${def_lcap} != xactive -a x${def_lcap} != xpassive -a x${def_lcap} != xoff ]; then
+	log_msg ERROR "invalid LACP mode given: ${def_lacp}"
+	return 1
+    fi
+
+    # check for valid policy
+    if ! echo ${def_policy} | egrep -q '^(L[2-4],?)+$'; then
+	log_msg ERROR "invalid policy given: ${def_policy}"
+	return 1
+    fi
+
+    # check for valid def_links arg
+    if [ -z "${def_links}" ]; then
+	log_msg ERROR "no links given"
+	return 1
+    fi
+
+    # check if aggregate already exists
+    if dladm show-aggr ${def_link} >/dev/null 2>&1; then
+	log_msg ERROR "aggregate interface ${def_link} already exists"
+	return 1
+    fi
+
+    # check if each link exists
+    typeset _link
+    for _link in ${def_links}; do
+	if ! dladm show-link ${_link} >/dev/null 2>&1; then
+	    log_msg ERROR "link ${_link} does not exist"
+	    return 1
+	fi
+
+	links_arg="${links_arg} -d ${_link}"
+    done
+
+    # create aggregate interface
+    cmd_out=$( dladm create-aggr -L ${def_lacp} -P ${def_policy} ${links_arg} ${def_link} 2>&1 )
+    if [ $? -gt 0 ]; then
+	log_msg ERROR "failed to create aggregate link: ${cmd_out}"
+	rt=1
+    fi
+
+    return ${rt}
+}
+
+setup_interface() {
+    # set up a network interface (may be called more than one time)
+    typeset def_nic
+    typeset def_obj # suffix like /v4
+    typeset def_addr # address with prefix/cidr netmask
+    typeset cmd_out
+    typeset rt
+
+    def_nic=$1
+    def_obj=$2
+    def_addr=$3
+
+    rt=0
+
+    # short "primary nic" hack. if def_nic is set to PRIMARY, look up first link
+    if [ x${def_nic} == xPRIMARY ]; then
+	def_nic=$( dladm show-link -p -o link | head -1 )
+    fi
+
+    # check if NIC is valid
+    if ! dladm show-link -p -o link ${def_nic} 2>&1 >/dev/null; then
+	log_msg ERROR "specified link ${def_nic} does not exist"
+	return 1
+    fi
+
+    ipadm create-if ${def_nic}
+
+    # https://github.com/olbohlen/sysding/issues/2
+    # check if def_addr is IPv6 and prepare a addrconf interface first.
+    # also if def_addr is just addrconf, just prepare a addrconf interface
+    echo ${def_addr} | egrep ":" >/dev/null 2>&1
+    if [ $? -eq 0 ]; then
+	# it has at least one colon, it is a IPv6 addr
+	# so we create a addrconf object with the users specified object name plus
+	# the "link" suffix, for link-local-address
+	ipadm create-addr -T addrconf ${def_nic}/${def_obj}link
+    fi
+
+    case x${def_addr} in
+	xdhcp)
+	    cmd_out=$( ipadm create-addr -T dhcp ${def_nic}/${def_obj} 2>&1 )
+	    if [ $? -gt 0 ]; then
+		log_msg ERROR "failed to set up dhcp: ${cmd_out}"
+		rt=1
+	    fi
+	    cmd_out=""
+	    ;;
+
+	xaddrconf)
+	    cmd_out=$( ipadm create-addr -T addrconf ${def_nic}/${def_obj}link )
+	    if [ $? -gt 0 ]; then
+		log_msg ERROR "failed to set up addrconf: ${cmd_out}"
+		rt=1
+	    fi
+	    cmd_out=""
+	    ;;
+
+	*)
+	    cmd_out=$( ipadm create-addr -T static -a local=${def_addr} ${def_nic}/${def_obj} 2>&1 )
+	    if [ $? -gt 0 ]; then
+		log_msg ERROR "failed to set up dhcp: ${cmd_out}"
+		rt=1
+	    fi
+	    cmd_out=""
+	    ;;
+    esac
+
+    return ${rt}
+}
+
+setup_ipmp() {
+    # with ipadm create-ipmp: set up ipmp on already configured NICs (setup_interface needs to be run first for lower links)
+    # w/o  ipadm create-ipmp: set up ipmp on unplumbed NICs the old fashioned way
+
+    typeset def_ipmp
+    typeset def_nica
+    typeset def_nicb
+    typeset def_addr # address with prefix/cidr netmask
+    typeset cmd_out
+    typeset rt
+
+    def_ipmp="$1"
+    def_nica="$2"
+    def_nicb="$3"
+    def_addr="$4"
+
+    rt=0
+
+    # ipadm supports ipadm create-ipmp
+    if [ ipadm -h 2>&1|grep -c 'create-ipmp' ]; then
+	cmd_out=$( ipadm create-ipmp -i ${def_nica},${def_nicb} ${def_ipmp} 2>&1 )
+	if [ $? -gt 0 ]; then
+	    log_msg ERROR "creating IPMP failed with: ${cmd_out}"
+	    rt=1
+	fi
+    else
+	# ipmp must be created the old fashioned way
+	cmd_out=$( ifconfig ${def_ipmp} ipmp group ${def_ipmp} 2>&1 )
+	if [ $? -gt 0 ]; then
+	    log_msg ERROR "failed to plumb ipmp group ${def_ipmp}: ${cmd_out}"
+	    rt=1
+	fi
+	# just wait some seconds to have the ipmp group available
+	cmd_out=$( ifconfig ${def_nica} plumb group ${def_ipmp} up 2>&1 )
+	if [ $? -gt 0 ]; then
+	    log_msg ERROR "failed to add ipmp link ${def_nica}: ${cmd_out}"
+	    rt=1
+	fi
+	cmd_out=$( ifconfig ${def_nicb} plumb group ${def_ipmp} up 2>&1 )
+	if [ $? -gt 0 ]; then
+	    log_msg ERROR "failed to add ipmp link ${def_nicb}: ${cmd_out}"
+	    rt=1
+	fi
+	cmd_out=$( ifconfig ${def_ipmp}  group ${def_ipmp} ${def_addr} up 2>&1 )
+	if [ $? -gt 0 ]; then
+	    log_msg ERROR "failed to create IP address on ipmp group: ${cmd_out}"
+	    rt=1
+	fi
+	if [ ${rt} -eq 0 ]; then
+	    echo group ${def_ipmp} up>/etc/hostname.${def_nica}
+	    echo group ${def_ipmp} up>/etc/hostname.${def_nicb}
+	    echo ipmp group ${def_ipmp}>/etc/hostname.${def_ipmp}
+	    echo group  ${def_ipmp} ${def_addr} up>>/etc/hostname.${def_ipmp}
+	fi
+    fi
+    cmod_out=""
+    return ${rt}
+}
+
+setup_keyboard() {
+    typeset def_keyboard
+    def_keyboard=$1
+    svccfg -s svc:/system/keymap:default "setprop keymap/layout = astring: ${def_keyboard}"
+    svccfg -s svc:/system/keymap:default refresh
+    svcadm restart svc:/system/keymap:default
+}
+
+setup_locale() {
+    # set up zones default locale
+    typeset def_locale
+    typeset rt
+
+    def_locale="$1"
+    rt=0
+
+    if ! locale -a | egrep "^${def_locale}$$" 2>&1 >/dev/null ; then
+	# selected locale is not installed - fall back to C and log error
+	log_error "specified locale ${def_locale} not installed, reverting to C"
+	def_local="C"
+	rt=42
+    fi
+
+    printf ",g,^LANG=,d\na\nLANG=%s\n.\nw\nq\n" "${def_locale}" | ed /etc/default/init
+
+    REBOOT_NEEDED=yes
+
+    return ${rt}
 }
 
 setup_nfs4domain() {
@@ -136,6 +358,129 @@ setup_nfs4domain() {
 
     svccfg -s svc:/network/nfs/mapid:default "setprop nfs-props/nfsmapid_domain = astring: ${def_domain}"
     svccfg -s svc:/network/nfs/mapid:default refresh
+}
+
+setup_ns_dns() {
+    # set up nameservice switch for DNS
+    typeset def_domain
+    typeset def_search
+    typeset def_nsaddr
+    typeset tmpval
+    typeset svc_search
+    typeset rt
+
+    rt=0
+
+    def_domain="$1"
+    def_search="$2"
+    def_nsaddr="$3"
+
+    # if we need the svc_search string, we need the search domains in double quotes
+    svc_search=$( echo ${def_search} | sed -e 's/ /" "/g' )
+
+    # check for nscfg, if found we use svccfg for configuration - else we edit flat files in /etc
+
+    if [ -x /usr/sbin/nscfg ]; then
+	# configure with svccfg (on Solaris 11.x)
+	svccfg -s network/dns/client <<EOF
+setprop config/search = astring: ("${svc_search}")
+setprop config/nameserver = net_address: (${def_nsaddr})
+select network/dns/client:default
+refresh
+quit
+EOF
+	svccfg -s system/name-service/switch <<EOF
+setprop config/host = astring: "files dns"
+select system/name-service/switch:default
+refresh
+quit
+EOF
+	nscfg export svc:/network/dns/client:default
+	svcadm enable svc:/network/dns/client
+
+	svcadm enable svc:/network/name-service/switch
+    else
+	# Recreate empty resolv.conf
+	rm -f /etc/resolv.conf
+	touch /etc/resolv.conf
+	if [ -n "${def_domain}" ] ; then
+	    printf "domain ${def_domain}\n" >> /etc/resolv.conf
+	fi
+	if [ -n "${def_search}" ]; then
+	    printf "search ${def_search}\n" >> /etc/resolv.conf
+	fi
+
+	for tmpval in ${def_nsaddr}; do
+	    printf "nameserver %s\n" ${tmpval} >>/etc/resolv.conf
+	done
+	cp /etc/nsswitch.dns /etc/nsswitch.conf
+	svcadm restart svc:/system/name-service-cache
+
+	# Without this dns/client can stuck in offline state on first boot
+	svcadm disable svc:/network/dns/client
+	svcadm enable svc:/network/dns/client
+    fi
+
+    return ${rt}
+
+}
+
+setup_route() {
+    # set up route (may be called more than one time)
+    typeset def_tgt
+    typeset def_dst
+    typeset rt
+    typeset ipvers
+
+   def_tgt=$1
+   def_dst=$2
+
+   rt=0
+
+   # https://github.com/olbohlen/sysding/issues/1
+   # check if def_dst is IPv6 and force the -inet6 flag for route(8)
+   echo ${def_dst} | egrep ":" >/dev/null 2>&1
+   if [ $? -eq 0 ]; then
+	# it has at least one colon, it is a IPv6 addr
+	ipvers="-inet6"
+   fi
+
+   
+   cmd_out=$( route -p add ${ipvers} ${def_tgt} ${def_dst} 2>&1 )
+   if [ $? -gt 0 ]; then
+	log_msg ERROR "failed to set up route: ${cmd_out}"
+	rt=1
+   fi
+
+   return ${rt}
+}
+
+setup_timezone() {
+    # set up zones timezone
+    typeset def_tz
+    typeset def_rtc
+    typeset rt
+
+    def_tz="$1"
+    rt=0
+
+    if ! [ -f /usr/share/lib/zoneinfo/${def_tz} ]; then
+	# specfied timezone is invalid, reverting to UTC
+	log_error "specified timezone ${def_tz} not installed or invalid, reverting to UTC"
+	def_tz="UTC"
+	rt=42
+
+    fi
+
+    printf ",g,^TZ=,d\na\nTZ=%s\n.\nw\nq\n" "${def_tz}" | ed /etc/default/init
+
+    if [ -n "${def_rtc}" -a -f /usr/share/lib/zoneinfo/${def_rtc} ]; then
+	/usr/sbin/rtc -z "${def_rtc}"
+    fi
+
+    REBOOT_NEEDED=yes
+
+    return ${rt}
 }
 
 setup_user_account() {
@@ -153,7 +498,7 @@ setup_user_account() {
     def_gecos="$4"
     def_home="$5"
     def_shell="$6"
-    
+
     rt=0
 
     # the username is the primary lookup key, so we check it here.
@@ -162,7 +507,7 @@ setup_user_account() {
 	log_msg ERROR "username ${def_username} already exists"
 	return 1
     fi
-    
+
     printf "%s:x:%s:%s:%s:%s:%s\n" "${def_username}" ${def_uid} ${def_gid} "${def_gecos}" "${def_home}" "${def_shell}" >>/etc/passwd
     rt=$?
     if [ ${rt} -gt 0 ]; then
@@ -204,230 +549,8 @@ setup_user_password() {
     fi
 
     if [ "${def_username}" = "root" ]; then
-        ROOT_PASSWORD_SET=yes
+	ROOT_PASSWORD_SET=yes
     fi
-    return ${rt}
-}
-
-setup_ipmp() {
-    # with ipadm create-ipmp: set up ipmp on already configured NICs (setup_interface needs to be run first for lower links)
-    # w/o  ipadm create-ipmp: set up ipmp on unplumbed NICs the old fashioned way
-
-    typeset def_ipmp
-    typeset def_nica
-    typeset def_nicb
-    typeset def_addr # address with prefix/cidr netmask
-    typeset cmd_out
-    typeset rt
-
-    def_ipmp="$1"
-    def_nica="$2"
-    def_nicb="$3"
-    def_addr="$4"
-
-    rt=0
-
-    # ipadm supports ipadm create-ipmp
-    if [ ipadm -h 2>&1|grep -c 'create-ipmp' ]; then
-      cmd_out=$( ipadm create-ipmp -i ${def_nica},${def_nicb} ${def_ipmp} 2>&1 )
-      if [ $? -gt 0 ]; then
-        log_msg ERROR "creating IPMP failed with: ${cmd_out}"
-        rt=1
-      fi
-    else
-      # ipmp must be created the old fashioned way
-      cmd_out=$( ifconfig ${def_ipmp} ipmp group ${def_ipmp} 2>&1 )
-      if [ $? -gt 0 ]; then
-          log_msg ERROR "failed to plumb ipmp group ${def_ipmp}: ${cmd_out}"
-          rt=1
-      fi
-      # just wait some seconds to have the ipmp group available
-      cmd_out=$( ifconfig ${def_nica} plumb group ${def_ipmp} up 2>&1 )
-      if [ $? -gt 0 ]; then
-          log_msg ERROR "failed to add ipmp link ${def_nica}: ${cmd_out}"
-          rt=1
-      fi
-      cmd_out=$( ifconfig ${def_nicb} plumb group ${def_ipmp} up 2>&1 )
-      if [ $? -gt 0 ]; then
-          log_msg ERROR "failed to add ipmp link ${def_nicb}: ${cmd_out}"
-          rt=1
-      fi
-      cmd_out=$( ifconfig ${def_ipmp}  group ${def_ipmp} ${def_addr} up 2>&1 )
-      if [ $? -gt 0 ]; then
-          log_msg ERROR "failed to create IP address on ipmp group: ${cmd_out}"
-          rt=1
-      fi
-      if [ ${rt} -eq 0 ]; then
-        echo group ${def_ipmp} up>/etc/hostname.${def_nica}
-        echo group ${def_ipmp} up>/etc/hostname.${def_nicb}
-        echo ipmp group ${def_ipmp}>/etc/hostname.${def_ipmp}
-        echo group  ${def_ipmp} ${def_addr} up>>/etc/hostname.${def_ipmp}
-      fi
-    fi
-    cmod_out=""
-    return ${rt}
-}
-
-setup_interface() {
-    # set up a network interface (may be called more than one time)
-    typeset def_nic
-    typeset def_obj # suffix like /v4
-    typeset def_addr # address with prefix/cidr netmask
-    typeset cmd_out
-    typeset rt
-    
-    def_nic=$1
-    def_obj=$2
-    def_addr=$3
-
-    rt=0
-
-    # short "primary nic" hack. if def_nic is set to PRIMARY, look up first link
-    if [ x${def_nic} == xPRIMARY ]; then
-	def_nic=$( dladm show-link -p -o link | head -1 )
-    fi
-
-    # check if NIC is valid
-    if ! dladm show-link -p -o link ${def_nic} 2>&1 >/dev/null; then
-	log_msg ERROR "specified link ${def_nic} does not exist"
-	return 1
-    fi
-    
-    ipadm create-if ${def_nic}
-
-    # https://github.com/olbohlen/sysding/issues/2
-    # check if def_addr is IPv6 and prepare a addrconf interface first.
-    # also if def_addr is just addrconf, just prepare a addrconf interface
-    echo ${def_addr} | egrep ":" >/dev/null 2>&1
-    if [ $? -eq 0 ]; then
-	# it has at least one colon, it is a IPv6 addr
-	# so we create a addrconf object with the users specified object name plus
-	# the "link" suffix, for link-local-address
-	ipadm create-addr -T addrconf ${def_nic}/${def_obj}link
-    fi
-
-    case x${def_addr} in
-	xdhcp)
-	    cmd_out=$( ipadm create-addr -T dhcp ${def_nic}/${def_obj} 2>&1 )
-	    if [ $? -gt 0 ]; then 
-		log_msg ERROR "failed to set up dhcp: ${cmd_out}"
-		rt=1
-	    fi
-	    cmd_out=""
-	    ;;
-
-	xaddrconf)
-	    cmd_out=$( ipadm create-addr -T addrconf ${def_nic}/${def_obj}link )
-	    if [ $? -gt 0 ]; then 
-		log_msg ERROR "failed to set up addrconf: ${cmd_out}"
-		rt=1
-	    fi
-	    cmd_out=""
-	    ;;
-
-	*)
-	    cmd_out=$( ipadm create-addr -T static -a local=${def_addr} ${def_nic}/${def_obj} 2>&1 )
-	    if [ $? -gt 0 ]; then 
-		log_msg ERROR "failed to set up dhcp: ${cmd_out}"
-		rt=1
-	    fi
-	    cmd_out=""
-	    ;;
-    esac
-    
-    return ${rt}
-}
-
-setup_route() {
-   # set up route (may be called more than one time)
-   typeset def_tgt
-   typeset def_dst
-   typeset rt
-   typeset ipvers
-  
-   def_tgt=$1
-   def_dst=$2
-
-   rt=0
-
-   # https://github.com/olbohlen/sysding/issues/1
-   # check if def_dst is IPv6 and force the -inet6 flag for route(8)
-   echo ${def_dst} | egrep ":" >/dev/null 2>&1
-   if [ $? -eq 0 ]; then
-       # it has at least one colon, it is a IPv6 addr
-       ipvers="-inet6"
-   fi
-
-   
-   cmd_out=$( route -p add ${ipvers} ${def_tgt} ${def_dst} 2>&1 )
-   if [ $? -gt 0 ]; then
-       log_msg ERROR "failed to set up route: ${cmd_out}"
-       rt=1
-   fi
-
-   return ${rt}
-}
-
-setup_aggregate() {
-    # set up aggregate interface (may be called as many times as you need aggregate interfaces)
-    typeset def_link
-    typeset def_lacp
-    typeset def_policy
-    typeset def_links
-    typeset links_arg
-
-    rt=0
-
-    def_link="$1"
-    def_lacp="$2"
-    def_policy="$3"
-    shift 3
-    def_links="$@"
-    links_arg=""
-
-
-    # check for valid LACP mode
-    if [ x${def_lcap} != xactive -a x${def_lcap} != xpassive -a x${def_lcap} != xoff ]; then
-        log_msg ERROR "invalid LACP mode given: ${def_lacp}"
-        return 1
-    fi
-
-    # check for valid policy
-    if ! echo ${def_policy} | egrep -q '^(L[2-4],?)+$'; then
-        log_msg ERROR "invalid policy given: ${def_policy}"
-        return 1
-    fi
-
-    # check for valid def_links arg
-    if [ -z "${def_links}" ]; then
-        log_msg ERROR "no links given"
-        return 1
-    fi
-
-    # check if aggregate already exists
-    if dladm show-aggr ${def_link} >/dev/null 2>&1; then
-        log_msg ERROR "aggregate interface ${def_link} already exists"
-        return 1
-    fi
-
-    # check if each link exists
-    typeset _link
-    for _link in ${def_links}; do
-        if ! dladm show-link ${_link} >/dev/null 2>&1; then
-            log_msg ERROR "link ${_link} does not exist"
-            return 1
-        fi
-
-        links_arg="${links_arg} -d ${_link}"
-    done
-
-    # create aggregate interface
-    cmd_out=$( dladm create-aggr -L ${def_lacp} -P ${def_policy} ${links_arg} ${def_link} 2>&1 )
-    if [ $? -gt 0 ]; then
-        log_msg ERROR "failed to create aggregate link: ${cmd_out}"
-        rt=1
-    fi
-
     return ${rt}
 }
 
@@ -445,143 +568,28 @@ setup_vlan() {
 
     # check for numerical VLAN id
     if ! echo ${def_vlan} | egrep -q '^[0-9]+$'; then
-        log_msg ERROR "VLAN id is not numerical: ${def_vlan}"
-        return 1
+	log_msg ERROR "VLAN id is not numerical: ${def_vlan}"
+	return 1
     fi
 
     # check if device exists
     if ! dladm show-link ${def_dev} >/dev/null 2>&1; then
-        log_msg ERROR "specified device ${def_dev} does not exist"
-        return 1
+	log_msg ERROR "specified device ${def_dev} does not exist"
+	return 1
     fi
 
     # check if vlan already exists
     if dladm show-vlan ${def_link} >/dev/null 2>&1; then
-        log_msg ERROR "specified VLAN link ${def_link} already exists"
-        return 1
+	log_msg ERROR "specified VLAN link ${def_link} already exists"
+	return 1
     fi
 
     # create VLAN interface
     cmd_out=$( dladm create-vlan -v ${def_vlan} -l ${def_dev} ${def_link} 2>&1 )
     if [ $? -gt 0 ]; then
-        log_msg ERROR "failed to create VLAN link: ${cmd_out}"
-        rt=1
+	log_msg ERROR "failed to create VLAN link: ${cmd_out}"
+	rt=1
     fi
-
-    return ${rt}
-}
-
-setup_ns_dns() {
-    # set up nameservice switch for DNS
-    typeset def_domain
-    typeset def_search
-    typeset def_nsaddr
-    typeset tmpval
-    typeset svc_search
-    typeset rt
-        
-    rt=0
-
-    def_domain="$1"
-    def_search="$2"
-    def_nsaddr="$3"
-
-    # if we need the svc_search string, we need the search domains in double quotes
-    svc_search=$( echo ${def_search} | sed -e 's/ /" "/g' )
-
-    # check for nscfg, if found we use svccfg for configuration - else we edit flat files in /etc
-
-    if [ -x /usr/sbin/nscfg ]; then
-	# configure with svccfg (on Solaris 11.x)
-	svccfg -s network/dns/client <<EOF
-setprop config/search = astring: ("${svc_search}")
-setprop config/nameserver = net_address: (${def_nsaddr})
-select network/dns/client:default
-refresh
-quit
-EOF
-	svccfg -s system/name-service/switch <<EOF
-setprop config/host = astring: "files dns"
-select system/name-service/switch:default
-refresh
-quit
-EOF
-	nscfg export svc:/network/dns/client:default
-	svcadm enable svc:/network/dns/client
-
-	svcadm enable svc:/network/name-service/switch
-    else
-	# Recreate empty resolv.conf
-	rm -f /etc/resolv.conf
-	touch /etc/resolv.conf
-	if [ -n "${def_domain}" ] ; then
-		printf "domain ${def_domain}\n" >> /etc/resolv.conf
-	fi
-	if [ -n "${def_search}" ]; then
-		printf "search ${def_search}\n" >> /etc/resolv.conf
-	fi
-	
-	for tmpval in ${def_nsaddr}; do
-	    printf "nameserver %s\n" ${tmpval} >>/etc/resolv.conf
-	done
-	cp /etc/nsswitch.dns /etc/nsswitch.conf
-	svcadm restart svc:/system/name-service-cache
-
-	# Without this dns/client can stuck in offline state on first boot
-	svcadm disable svc:/network/dns/client
-	svcadm enable svc:/network/dns/client
-    fi
-    
-    return ${rt}
-
-}
-
-setup_timezone() {
-    # set up zones timezone
-    typeset def_tz
-    typeset def_rtc
-    typeset rt
-
-    def_tz="$1"
-    rt=0
-
-    if ! [ -f /usr/share/lib/zoneinfo/${def_tz} ]; then
-	# specfied timezone is invalid, reverting to UTC
-	log_error "specified timezone ${def_tz} not installed or invalid, reverting to UTC"
-	def_tz="UTC"
-	rt=42
-
-    fi
-
-    printf ",g,^TZ=,d\na\nTZ=%s\n.\nw\nq\n" "${def_tz}" | ed /etc/default/init
-
-    if [ -n "${def_rtc}" -a -f /usr/share/lib/zoneinfo/${def_rtc} ]; then
-        /usr/sbin/rtc -z "${def_rtc}"
-    fi
-
-    REBOOT_NEEDED=yes
-
-    return ${rt}
-}
-
-setup_locale() {
-    # set up zones default locale
-    typeset def_locale
-    typeset rt
-
-    def_locale="$1"
-    rt=0
-
-    if ! locale -a | egrep "^${def_locale}$$" 2>&1 >/dev/null ; then
-	# selected locale is not installed - fall back to C and log error
-	log_error "specified locale ${def_locale} not installed, reverting to C"
-	def_local="C"
-	rt=42
-    fi
-    
-    printf ",g,^LANG=,d\na\nLANG=%s\n.\nw\nq\n" "${def_locale}" | ed /etc/default/init
-
-    REBOOT_NEEDED=yes
 
     return ${rt}
 }
@@ -598,7 +606,7 @@ setup_zpool() {
 	log_msg ERROR "failed to set up zpool: ${cmd_out}"
 	rt=1
     fi
-    
+
     return ${rt}
 }
 
@@ -614,7 +622,7 @@ setup_zfs() {
 	log_msg ERROR "failed to set up zfs: ${cmd_out}"
 	rt=1
     fi
-    
+
     return ${rt}
 }
 
