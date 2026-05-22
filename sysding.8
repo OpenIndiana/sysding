@@ -26,12 +26,33 @@ The following methods are supported currently:
 .sp
 .ne 2
 .na
-\fB\fBsetup_timezone "TZ"\fR\fR
+\fB\fBsetup_aggregate "aggregate_name" "lacp_mode" "policy" "link" ["link2" ...]\fR\fR
 .ad
 .sp .6
 .RS 4n
-sets systems timezone to the specified argument ("TZ")
-If the specified timezone is invalid, it will be set to "UTC".
+create aggregate device over given links with given LACP mode and hashing policy
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBsetup_interface "nic" "addr-object suffix" "addr"\fR\fR
+.ad
+.sp .6
+.RS 4n
+configures the specified NIC "nic" for IP. "nic" may be the alias "PRIMARY" which refers to the first NIC found by dladm. If "addr" is the special value "dhcp" it will configure a dhcp-address, if "addr" is the special value "addrconf" it will configure ONLY a link-local unicast address.
+NOTE: you don't have to configure an "addrconf" interface if you configure a static IPv6 address, this will be done automatically.
+The "addr-object suffix" is the suffix given after the nic-name in the address-object (see \fRipadm\fB(8)).
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBsetup_ipmp "ipmp interface name" "nic1" "nic2" "addr"\fR\fR
+.ad
+.sp .6
+.RS 4n
+configures an ipmp group with the interfaces "nic1" and "nic2" and defines an IP adress "addr" for the ipmp group. See in \fBifconfig\fR(8) how to define the values for "addr". 
 .RE
 
 .sp
@@ -59,6 +80,39 @@ If this function is not called, the NFS4 Domain will be set dynamically. (via DN
 .sp
 .ne 2
 .na
+\fB\fBsetup_ns_dns "domain.dom" "search.dom..." "dnsserv-addr..."\fR\fR
+.ad
+.sp .6
+.RS 4n
+configures DNS as primary name-service within the "domain.dom" domain. You may specify 
+one or more search domains in double-quotes like "domain.dom search1.dom enterprize.biz" and
+you may specify one or more name-server addresses like "172.20.0.53 172.21.0.53".
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBsetup_route "target" "router"\fR\fR
+.ad
+.sp .6
+.RS 4n
+creates a persistant route for "target" via "router"
+.RE
+
+.sp
+.ne 2
+.na
+\fB\fBsetup_timezone "TZ"\fR\fR
+.ad
+.sp .6
+.RS 4n
+sets systems timezone to the specified argument ("TZ")
+If the specified timezone is invalid, it will be set to "UTC".
+.RE
+
+.sp
+.ne 2
+.na
 \fB\fBsetup_user_account "username" <uid> <gid> "gecos" "/home" "/bin/shell"\fR\fR
 .ad
 .sp .6
@@ -79,38 +133,6 @@ sets users "username" password-hash to the specified one in "hash"
 .sp
 .ne 2
 .na
-\fB\fBsetup_interface "nic" "addr-object suffix" "addr"\fR\fR
-.ad
-.sp .6
-.RS 4n
-configures the specified NIC "nic" for IP. "nic" may be the alias "PRIMARY" which refers to the first NIC found by dladm. If "addr" is the special value "dhcp" it will configure a dhcp-address, if "addr" is the special value "addrconf" it will configure ONLY a link-local unicast address.
-NOTE: you don't have to configure an "addrconf" interface if you configure a static IPv6 address, this will be done automatically.
-The "addr-object suffix" is the suffix given after the nic-name in the address-object (see \fRipadm\fB(8)).
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBsetup_route "target" "router"\fR\fR
-.ad
-.sp .6
-.RS 4n
-creates a persistant route for "target" via "router"
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBsetup_aggregate "aggregate_name" "lacp_mode" "policy" "link" ["link2" ...]\fR\fR
-.ad
-.sp .6
-.RS 4n
-create aggregate device over given links with given LACP mode and hashing policy
-.RE
-
-.sp
-.ne 2
-.na
 \fB\fBsetup_vlan "vlan_name" "vlan_id" "link"\fR\fR
 .ad
 .sp .6
@@ -121,23 +143,11 @@ create VLAN device on given link with given VLAN ID
 .sp
 .ne 2
 .na
-\fB\fBsetup_ipmp "ipmp interface name" "nic1" "nic2" "addr"\fR\fR
+\fB\fBsetup_zfs "filesystem"\fR\fR
 .ad
 .sp .6
 .RS 4n
-configures an ipmp group with the interfaces "nic1" and "nic2" and defines an IP adress "addr" for the ipmp group. See in \fBifconfig\fR(8) how to define the values for "addr". 
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBsetup_ns_dns "domain.dom" "search.dom..." "dnsserv-addr..."\fR\fR
-.ad
-.sp .6
-.RS 4n
-configures DNS as primary name-service within the "domain.dom" domain. You may specify 
-one or more search domains in double-quotes like "domain.dom search1.dom enterprize.biz" and
-you may specify one or more name-server addresses like "172.20.0.53 172.21.0.53".
+creates a ZFS filesystem, which is specified as "filesystem". You can also specify all valid parameters to "zfs create", i.e.: "-V 20G rpool/vol1" or "-o mountpoint=legacy rpool/stuff"
 .RE
 
 .sp
@@ -149,16 +159,6 @@ you may specify one or more name-server addresses like "172.20.0.53 172.21.0.53"
 .RS 4n
 create a zpool "poolname" using the "device spec". "device spec" are valid
 parameters to zpool create, for example "mirror c0t0d0 c0t1d0".
-.RE
-
-.sp
-.ne 2
-.na
-\fB\fBsetup_zfs "filesystem"\fR\fR
-.ad
-.sp .6
-.RS 4n
-creates a ZFS filesystem, which is specified as "filesystem". You can also specify all valid parameters to "zfs create", i.e.: "-V 20G rpool/vol1" or "-o mountpoint=legacy rpool/stuff"
 .RE
 
 .SH EXAMPLES
