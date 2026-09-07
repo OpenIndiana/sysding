@@ -360,7 +360,7 @@ setup_locale() {
 			lc_language="${lc_base}:${lc_lang}:en"
 		fi
 
-		printf "export LANG=%s\nexport LC_TIME=\$LANG\nexport LC_MESSAGES=\$LANG\nexport LANGUAGE=%s\n" \
+		printf "export LANGUAGE=%s\n" \
 			"${def_locale}" "${lc_language}" >> /etc/profile
     fi
 
