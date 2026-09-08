@@ -420,8 +420,9 @@ EOF
 	cp /etc/nsswitch.dns /etc/nsswitch.conf
 	svcadm restart svc:/system/name-service-cache
 
-	# Without this dns/client can stuck in offline state on first boot
-	svcadm disable svc:/network/dns/client
+	# Wait for DISABLED so SMF observes the transition before re-enabling.
+	# Otherwise dns/client can remain offline after resolv.conf is created.
+	svcadm disable -s svc:/network/dns/client
 	svcadm enable svc:/network/dns/client
     fi
 
