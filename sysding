@@ -359,9 +359,11 @@ setup_locale() {
 		else
 			lc_language="${lc_base}:${lc_lang}:en"
 		fi
-
+		mdkir -p /etc/profile.d
+		touch /etc/profile.d/language.sh
+		chmod +x /etc/profile.d/language.sh
 		printf "export LANGUAGE=%s\n" \
-			"${def_locale}" "${lc_language}" >> /etc/profile
+			"${def_locale}" "${lc_language}" >> /etc/profile.d/language.sh
     fi
 
     REBOOT_NEEDED=yes
