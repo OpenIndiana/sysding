@@ -336,21 +336,37 @@ setup_locale() {
     # set up zones default locale
     typeset def_locale
     typeset rt
-
+	typeset lc_base
+	typeset lc_lang
+	typeset lc_language
     def_locale="$1"
     rt=0
 
-    if ! locale -a | egrep "^${def_locale}$$" 2>&1 >/dev/null ; then
+	if ! locale -a | egrep "^${def_locale}\$" >/dev/null 2>&1 ; then
 	# selected locale is not installed - fall back to C and log error
-	log_error "specified locale ${def_locale} not installed, reverting to C"
-	def_local="C"
-	rt=42
-    fi
-
+		log_error "specified locale ${def_locale} not installed, reverting to C"
+    	def_locale="C"
+	    rt=42
+	fi
     printf ",g,^LANG=,d\na\nLANG=%s\n.\nw\nq\n" "${def_locale}" | ed /etc/default/init
 
-    REBOOT_NEEDED=yes
+    # set locale variables for gui apps if it's not fallback
+    if [ "${def_locale}" != "C" ]; then
+		lc_base="${def_locale%%.*}"
+		lc_lang="${lc_base%%_*}"
+		if [ "${lc_lang}" = "en" ]; then
+			lc_language="${lc_base}:en"
+		else
+			lc_language="${lc_base}:${lc_lang}:en"
+		fi
+		mdkir -p /etc/profile.d
+		touch /etc/profile.d/language.sh
+		chmod +x /etc/profile.d/language.sh
+		printf "export LANGUAGE=%s\n" \
+			"${def_locale}" "${lc_language}" >> /etc/profile.d/language.sh
+    fi
 
+    REBOOT_NEEDED=yes
     return ${rt}
 }
 
